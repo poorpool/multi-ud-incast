@@ -1,5 +1,6 @@
 #include "common.h"
 #include "rdma.h"
+#include <csignal>
 #include <cstddef>
 #include <infiniband/verbs.h>
 #include <iostream>
@@ -30,6 +31,8 @@ struct ClientContext {
   int mpi_size_;
   // 主机名
   string hostname_;
+  // 是否还没被 ctrl+c 停止
+  bool should_run_;
 
   // 打开的 RNIC 的信息
   RdmaDeviceInfo dev_info_;
@@ -90,6 +93,8 @@ bool ClientContext::InitContext() {
     printf("Failed to create QP.\n");
     return false;
   }
+
+  should_run_ = true;
   return true;
 }
 
@@ -111,7 +116,13 @@ void ClientContext::DestroyContext() {
   ibv_close_device(dev_info_.ctx_);
 }
 
+void CtrlCHandler(int signum) {
+  g_ctx.should_run_ = false;
+  exit(signum);
+}
+
 int main(int argc, char *argv[]) {
+  signal(SIGTERM, CtrlCHandler);
   if (argc != 5) {
     printf("Usage: %s dev_name gid_index server_name server_port", argv[0]);
     return 0;
@@ -135,8 +146,36 @@ int main(int argc, char *argv[]) {
     return 0;
   }
 
-  printf("MPI hello from %d/%d on %s\n", g_ctx.mpi_rank_, g_ctx.mpi_size_,
-         g_ctx.hostname_.c_str());
+  for (int i = 0; i < kClientPacketNumLimit; i++) {
+    RdmaPostUdSend(g_ctx.buf_ + i * kPacketSize, kPacketSize, lkey, g_ctx.qp_,
+                   i, ah, remote_info);
+  }
+
+  ibv_wc wc[kRdmaPollNum];
+  int64_t unfinished_cnt = 0;
+  int64_t finished_cnt = 0;
+  while (g_ctx.should_run_ || unfinished_cnt > 0) {
+    int n;
+    // recv 什么也不做
+    n = ibv_poll_cq(g_ctx.recv_cq_, kRdmaPollNum, wc);
+    // send 检查能不能继续发
+    n = ibv_poll_cq(g_ctx.recv_cq_, kRdmaPollNum, wc);
+    for (int i = 0; i < n; i++) {
+      if (wc[i].status != IBV_WC_SUCCESS) {
+        printf("Error wc[i].status %d\n", wc[i].status);
+        continue;
+      }
+      if (wc[i].opcode != IBV_WC_SEND) {
+        printf("Error wc[i].opcode %d\n", wc[i].status);
+        continue;
+      }
+      unfinished_cnt--;
+      finished_cnt++;
+      RdmaPostUdSend(const void *buf, uint32_t len, uint32_t lkey, ibv_qp *qp,
+                     int wr_id, ibv_ah *ah, RdmaUDConnExchangeInfo remote_info)
+    }
+    int sn =
+  }
 
   MPI_Finalize();
 

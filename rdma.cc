@@ -1,10 +1,8 @@
 #include "rdma.h"
+#include <cstdint>
 #include <infiniband/verbs.h>
 #include <string>
 
-using std::cerr;
-using std::cout;
-using std::endl;
 using std::string;
 
 string RdmaGid2Str(ibv_gid gid) {
@@ -88,19 +86,17 @@ RdmaDeviceInfo RdmaGetAndOpenDevice(const string &device_name) {
   return rdi;
 }
 
-ibv_ah *CreateAH(ibv_pd *pd, int port, int sl, RdmaUDConnExchangeInfo dest,
-                 int sgid_idx) {
+ibv_ah *RdmaCreateAh(ibv_pd *pd, RdmaExchangeInfo &dest, int sgid_idx) {
   ibv_ah_attr ah_attr;
   memset(&ah_attr, 0, sizeof(ah_attr));
-  ah_attr.dlid = dest.lid;
-  ah_attr.sl = sl;
+  ah_attr.dlid = dest.lid_;
+  ah_attr.sl = kRdmaDefaultServiceLevel;
   ah_attr.is_global = 0;
-  ah_attr.src_path_bits = 0;
-  ah_attr.port_num = port;
-  if (dest.gid.global.interface_id) {
+  ah_attr.port_num = kRdmaDefaultPort;
+  if (dest.gid_.global.interface_id) {
     ah_attr.is_global = 1;
     ah_attr.grh.hop_limit = 1;
-    ah_attr.grh.dgid = dest.gid;
+    ah_attr.grh.dgid = dest.gid_;
     ah_attr.grh.sgid_index = sgid_idx;
   }
   return ibv_create_ah(pd, &ah_attr);
@@ -121,88 +117,64 @@ ibv_qp *RdmaCreateQP(ibv_pd *pd, ibv_cq *send_cq, ibv_cq *recv_cq,
   return ibv_create_qp(pd, &qp_init_attr);
 }
 
-int sock_sync_data(int sock, int xfer_size, char *local_data,
-                   char *remote_data) {
-  int rc;
-  int read_bytes = 0;
-  int total_read_bytes = 0;
-  rc = write(sock, local_data, xfer_size);
-  if (rc < xfer_size) {
-    fprintf(stderr, "无法发送本地数据\n");
-    return -1;
-  }
-  while (total_read_bytes < xfer_size) {
-    read_bytes = read(sock, remote_data, xfer_size);
-    if (read_bytes > 0)
-      total_read_bytes += read_bytes;
-    else {
-      fprintf(stderr, "无法读取远程数据\n");
-      return -1;
-    }
-  }
-  return 0;
-}
-
-int modify_qp_to_init(struct ibv_qp *qp, RdmaUDConnExchangeInfo remote_info) {
+int ModifyQpToInit(struct ibv_qp *qp) {
   struct ibv_qp_attr attr;
   memset(&attr, 0, sizeof(ibv_qp_attr));
 
   attr.qp_state = IBV_QPS_INIT;
-  attr.qkey = 0x11111111;
+  attr.qkey = kRdmaDefaultQKey;
   attr.pkey_index = 0;
-  attr.port_num = config.ib_port;
+  attr.port_num = kRdmaDefaultPort;
 
-  int flags = IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_QKEY;
-
-  int ret = ibv_modify_qp(qp, &attr, flags);
+  int ret = ibv_modify_qp(
+      qp, &attr, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_QKEY);
   if (ret != 0) {
     printf("ibv_modify_qp to INIT failed %d", ret);
   }
   return ret;
 }
-int modify_qp_to_rtr(struct ibv_qp *qp, RdmaUDConnExchangeInfo remote_info) {
+
+int ModifyQpToRtr(struct ibv_qp *qp) {
   struct ibv_qp_attr attr;
-  int flags;
-  int rc;
   memset(&attr, 0, sizeof(ibv_qp_attr));
+
   attr.qp_state = IBV_QPS_RTR;
-  flags = IBV_QP_STATE;
-  rc = ibv_modify_qp(qp, &attr, flags);
-  if (rc) {
-    cerr << "无法修改 QP 状态为 RTR" << strerror(errno) << endl;
+
+  int ret = ibv_modify_qp(qp, &attr, IBV_QP_STATE);
+  if (ret) {
+    printf("ibv_modify_qp to RTR failed %d", ret);
   }
-  return rc;
-}
-int modify_qp_to_rts(struct ibv_qp *qp, RdmaUDConnExchangeInfo remote_info) {
-  struct ibv_qp_attr attr;
-  int flags;
-  int rc;
-  memset(&attr, 0, sizeof(attr));
-  attr.qp_state = IBV_QPS_RTS;
-  attr.sq_psn = remote_info.psn;
-  flags = IBV_QP_STATE | IBV_QP_SQ_PSN;
-  rc = ibv_modify_qp(qp, &attr, flags); // 使用 ibv_modify_qp 函数修改 QP 的属性
-  if (rc) {
-    cerr << "将 QP 状态修改为 RTS 失败" << endl;
-  }
-  return rc;
+  return ret;
 }
 
-int post_recv(const void *buf, uint32_t len, uint32_t lkey, ibv_qp *qp,
-              int wr_id) {
+int ModifyQpToRts(struct ibv_qp *qp) {
+  struct ibv_qp_attr attr;
+  memset(&attr, 0, sizeof(attr));
+
+  attr.qp_state = IBV_QPS_RTS;
+  attr.sq_psn = 0;
+  int ret = ibv_modify_qp(qp, &attr, IBV_QP_STATE | IBV_QP_SQ_PSN);
+  if (ret) {
+    printf("ibv_modify_qp to RTS failed %d", ret);
+  }
+  return ret;
+}
+
+int RdmaPostUdRecv(const void *buf, uint32_t len, uint32_t lkey, ibv_qp *qp,
+                   int wr_id) {
   int ret = 0;
   struct ibv_recv_wr *bad_wr;
 
   struct ibv_sge list;
   memset(&list, 0, sizeof(ibv_sge));
-  list.addr = reinterpret_cast<uintptr_t>(buf);
+  list.addr = reinterpret_cast<uint64_t>(buf);
   list.length = len;
   list.lkey = lkey;
 
   struct ibv_recv_wr wr;
   memset(&wr, 0, sizeof(ibv_recv_wr));
   wr.wr_id = wr_id;
-  wr.next = NULL;
+  wr.next = nullptr;
   wr.sg_list = &list;
   wr.num_sge = 1;
 
@@ -210,64 +182,31 @@ int post_recv(const void *buf, uint32_t len, uint32_t lkey, ibv_qp *qp,
   return ret;
 }
 
-int post_send(const void *buf, uint32_t len, uint32_t lkey, ibv_qp *qp,
-              int wr_id, enum ibv_wr_opcode opcode, ibv_ah *local_ah,
-              RdmaUDConnExchangeInfo remote_info) {
+int RdmaPostUdSend(const void *buf, uint32_t len, uint32_t lkey, ibv_qp *qp,
+                   int wr_id, ibv_ah *ah, RdmaExchangeInfo &dest,
+                   uint32_t imm_data) {
   int ret = 0;
   struct ibv_send_wr *bad_wr;
 
   struct ibv_sge list;
   memset(&list, 0, sizeof(ibv_sge));
-  list.addr = reinterpret_cast<uintptr_t>(buf);
+  list.addr = reinterpret_cast<uint64_t>(buf);
   list.length = len;
   list.lkey = lkey;
 
   struct ibv_send_wr wr;
   memset(&wr, 0, sizeof(ibv_send_wr));
   wr.wr_id = wr_id;
-  wr.next = NULL;
+  wr.next = nullptr;
   wr.sg_list = &list;
   wr.num_sge = 1;
-  wr.opcode = opcode;
-  wr.send_flags = IBV_WR_SEND;
-  wr.wr.ud.ah = local_ah; // 本地ah存放了对侧信息
-  wr.wr.ud.remote_qkey = remote_info.qkey;
-  wr.wr.ud.remote_qpn = remote_info.qpn;
-  ret = ibv_post_send(qp, &wr, &bad_wr);
-  if (ret)
-    cout << ret << endl;
-  return ret;
-}
+  wr.imm_data = imm_data;
+  wr.opcode = IBV_WR_SEND_WITH_IMM;
+  wr.send_flags = IBV_SEND_SIGNALED;
+  wr.wr.ud.ah = ah;
+  wr.wr.ud.remote_qkey = kRdmaDefaultQKey;
+  wr.wr.ud.remote_qpn = dest.qpn_;
 
-int poll_completion(ibv_cq *cq) {
-  struct ibv_wc wc;
-  unsigned long start_time_msec;
-  unsigned long cur_time_msec;
-  struct timeval cur_time;
-  int poll_result;
-  int rc = 0;
-  /* 获取当前时间 */
-  gettimeofday(&cur_time, NULL);
-  start_time_msec = (cur_time.tv_sec * 1000) + (cur_time.tv_usec / 1000);
-  do {
-    poll_result = ibv_poll_cq(cq, 1, &wc);
-    gettimeofday(&cur_time, NULL);
-    cur_time_msec = (cur_time.tv_sec * 1000) + (cur_time.tv_usec / 1000);
-  } while ((poll_result == 0) && ((cur_time_msec - start_time_msec) < 5000));
-  if (poll_result < 0) {
-    fprintf(stderr, "无法完成完成队列\n");
-    rc = 1;
-  } else if (poll_result == 0) {
-    fprintf(stderr, "完成队列超时\n");
-    rc = 1;
-  } else {
-    // fprintf(stdout, "完成队列完成\n");
-    /* 检查完成的操作是否成功 */
-    if (wc.status != IBV_WC_SUCCESS) {
-      fprintf(stderr, "完成的操作失败，错误码=0x%x，vendor_err=0x%x\n",
-              wc.status, wc.vendor_err);
-      rc = 1;
-    }
-  }
-  return rc;
+  ret = ibv_post_send(qp, &wr, &bad_wr);
+  return ret;
 }
