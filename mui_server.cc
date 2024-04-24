@@ -1,9 +1,10 @@
 #include "FastMemcpy.h"
 #include "common.h"
 #include "rdma.h"
+#include <atomic>
 #include <csignal>
 #include <infiniband/verbs.h>
-#include <json/forwards.h>
+#include <json/value.h>
 #include <jsonrpccpp/server.h>
 #include <jsonrpccpp/server/connectors/tcpsocketserver.h>
 #include <pthread.h>
@@ -13,6 +14,7 @@
 using jsonrpc::JSON_STRING;
 using jsonrpc::PARAMS_BY_NAME;
 using jsonrpc::Procedure;
+using std::atomic;
 using std::thread;
 using std::vector;
 
@@ -35,8 +37,6 @@ struct WorkerContext {
   ibv_ah *ah_;
   // 模拟 memcpy 的目的地
   char small_buffer_[kPacketSize];
-  // 收到的 packet 的数量
-  int64_t received_cnt_;
 
   // 初始化工作线程，返回成功与否
   bool InitContext(int id);
@@ -73,6 +73,8 @@ struct ServerContext {
   ibv_gid gid_;
   // 是否还没被 ctrl+c 或者客户端停止运行
   bool should_run_;
+  // 每个 client 收到的包计数
+  atomic<int> received_cnts_[kClientNumLimit];
 
   // 初始化 RDMA 环境和工作线程，返回成功与否
   void InitContext();
@@ -82,7 +84,6 @@ struct ServerContext {
 
 bool WorkerContext::InitContext(int id) {
   id_ = id;
-  received_cnt_ = 0;
   // 创建 CQ
   send_cq_ =
       ibv_create_cq(g_ctx.dev_info_.ctx_, kRdmaCqSize, nullptr, nullptr, 0);
@@ -163,7 +164,9 @@ void ServerContext::InitContext() {
   } else {
     memset(&gid_, 0, sizeof(union ibv_gid));
   }
-
+  for (auto &received_cnt : received_cnts_) {
+    received_cnt = 0;
+  }
   pthread_barrier_init(&barrier_, nullptr, cfg_.thread_num_ + 1);
 }
 
@@ -208,7 +211,7 @@ void WorkerFunc(int id) {
         printf("Error wc[i].opcode %d\n", wc[i].status);
         continue;
       }
-      w_ctx->received_cnt_++;
+      g_ctx.received_cnts_[wc[i].imm_data]++;
       memcpy_fast(w_ctx->small_buffer_,
                   w_ctx->buf_ + wc[i].wr_id * kRdmaServerBufferUnitSize -
                       kPacketSize,
@@ -257,11 +260,10 @@ void ServerJrpcServer::QueryAh(const Json::Value &req, // NOLINT
 
 void ServerJrpcServer::QueryCounters(const Json::Value &req, // NOLINT
                                      Json::Value &resp) {
-  int64_t cnt = 0;
-  for (int i = 0; i < g_ctx.cfg_.thread_num_; i++) {
-    cnt += g_ctx.ctxs_[i]->received_cnt_;
+  for (int i = 0; i < kClientNumLimit; i++) {
+    resp[std::to_string(i)] =
+        static_cast<Json::Value::Int64>(g_ctx.received_cnts_[i]);
   }
-  resp["cnt"] = static_cast<Json::Value::Int64>(cnt);
 }
 
 void ServerJrpcServer::Shutdown(const Json::Value &req) { // NOLINT

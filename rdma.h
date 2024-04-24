@@ -1,18 +1,9 @@
 #ifndef POORPOOL_RDMA_H
 #define POORPOOL_RDMA_H
 
-#include <arpa/inet.h>
-#include <byteswap.h>
-#include <chrono>
-#include <cstdio>
-#include <cstdlib>
-#include <infiniband/verbs.h>
-#include <iostream>
-#include <string>
-#include <sys/socket.h>
 #include "common.h"
-#include <sys/time.h>
-#include <unistd.h>
+#include <infiniband/verbs.h>
+#include <string>
 
 // RDMA 网卡使用网卡的哪个端口（一般都是 1）
 constexpr int kRdmaDefaultPort = 1;

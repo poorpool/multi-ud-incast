@@ -8,25 +8,30 @@ set(CMAKE_CXX_FLAGS_DEBUG "$ENV{CXXFLAGS} -O0 -g -ggdb -fno-omit-frame-pointer -
 set(CMAKE_CXX_FLAGS_RELEASE "$ENV{CXXFLAGS} -O3")
 
 set(MELON_DEPENDENCY_PREFIX "/home/cyx/melonfs/deps/install")
-list(APPEND CMAKE_PREFIX_PATH ${MELON_DEPENDENCY_PREFIX})
+set(CMAKE_PREFIX_PATH ${MELON_DEPENDENCY_PREFIX})
 
-find_package(MPI REQUIRED)
 find_package(libjson-rpc-cpp REQUIRED)
 find_package(jsoncpp REQUIRED)
+find_package(MPI REQUIRED)
 
 add_executable(mui_server
-    mui_server.cc
-    rdma.cc
+  mui_server.cc
+  rdma.cc
 )
 target_link_libraries(mui_server PRIVATE
-    libjson-rpc-cpp::jsonrpcserver
-    jsoncpp
-    ibverbs
+  libjson-rpc-cpp::jsonrpcserver
+  jsoncpp_lib
+  ibverbs
 )
 
 add_executable(mui_client
   mui_client.cc
+  rdma.cc
 )
-
-message(STATUS "Run: ${MPIEXEC} ${MPIEXEC_NUMPROC_FLAG} ${MPIEXEC_MAX_NUMPROCS} ${MPIEXEC_PREFLAGS} EXECUTABLE ${MPIEXEC_POSTFLAGS} ARGS")
-target_link_libraries(mui_client PUBLIC MPI::MPI_CXX)
+target_link_libraries(mui_client PRIVATE
+  MPI::MPI_CXX
+  libjson-rpc-cpp::jsonrpcclient
+  jsoncpp_lib
+  ibverbs
+  pthread
+)
