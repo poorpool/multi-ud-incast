@@ -7,7 +7,22 @@ set(CMAKE_BUILD_TYPE "Release")
 set(CMAKE_CXX_FLAGS_DEBUG "$ENV{CXXFLAGS} -O0 -g -ggdb -fno-omit-frame-pointer -fno-inline-functions")
 set(CMAKE_CXX_FLAGS_RELEASE "$ENV{CXXFLAGS} -O3")
 
+set(MELON_DEPENDENCY_PREFIX "/home/cyx/melonfs/deps/install")
+list(APPEND CMAKE_PREFIX_PATH ${MELON_DEPENDENCY_PREFIX})
+
 find_package(MPI REQUIRED)
+find_package(libjson-rpc-cpp REQUIRED)
+find_package(jsoncpp REQUIRED)
+
+add_executable(mui_server
+    mui_server.cc
+    rdma.cc
+)
+target_link_libraries(mui_server PRIVATE
+    libjson-rpc-cpp::jsonrpcserver
+    jsoncpp
+    ibverbs
+)
 
 add_executable(mui_client
   mui_client.cc

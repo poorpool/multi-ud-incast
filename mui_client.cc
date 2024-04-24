@@ -40,7 +40,7 @@ struct ClientContext {
   ibv_cq *send_cq_;
   // RDMA recv CQ
   ibv_cq *recv_cq_;
-  // RDMA WR buffer
+  // RDMA send buffer
   char *buf_;
   // RDMA MR
   ibv_mr *mr_;
@@ -93,6 +93,9 @@ bool ClientContext::InitContext() {
     printf("Failed to create QP.\n");
     return false;
   }
+  ModifyQpToInit(qp_);
+  ModifyQpToRtr(qp_);
+  ModifyQpToRts(qp_);
 
   should_run_ = true;
   return true;
@@ -116,15 +119,18 @@ void ClientContext::DestroyContext() {
   ibv_close_device(dev_info_.ctx_);
 }
 
-void CtrlCHandler(int signum) {
+void CtrlCHandler(int  /*signum*/) {
   g_ctx.should_run_ = false;
-  exit(signum);
+  if (g_ctx.mpi_rank_ == 0) {
+    printf("received ctrl+c, try to stop...");
+  }
 }
 
 int main(int argc, char *argv[]) {
   signal(SIGTERM, CtrlCHandler);
+  signal(SIGINT, CtrlCHandler);
   if (argc != 5) {
-    printf("Usage: %s dev_name gid_index server_name server_port", argv[0]);
+    printf("Usage: %s dev_name gid_index server_name server_port\n", argv[0]);
     return 0;
   }
   g_ctx.cfg_.dev_name_ = argv[1];
@@ -152,8 +158,10 @@ int main(int argc, char *argv[]) {
   }
 
   ibv_wc wc[kRdmaPollNum];
-  int64_t unfinished_cnt = 0;
+  int64_t unfinished_cnt = kClientPacketNumLimit;
   int64_t finished_cnt = 0;
+  MPI_Barrier(MPI_COMM_WORLD);
+  // 计时
   while (g_ctx.should_run_ || unfinished_cnt > 0) {
     int n;
     // recv 什么也不做
@@ -176,7 +184,10 @@ int main(int argc, char *argv[]) {
     }
     int sn =
   }
+  MPI_Barrier(MPI_COMM_WORLD);
+  // 计时
 
+  g_ctx.DestroyContext();
   MPI_Finalize();
 
   return 0;

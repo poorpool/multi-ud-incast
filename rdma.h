@@ -10,6 +10,7 @@
 #include <iostream>
 #include <string>
 #include <sys/socket.h>
+#include "common.h"
 #include <sys/time.h>
 #include <unistd.h>
 
@@ -28,6 +29,8 @@ constexpr int kRdmaMaxInlineSize = 256 - 68;
 constexpr int kRdmaPollNum = 8;
 // 全部采用一样的 QKey，就不生成了
 constexpr uint32_t kRdmaDefaultQKey = 114514;
+// server UD recv 的缓冲区单元大小
+constexpr int64_t kRdmaServerBufferUnitSize = sizeof(ibv_grh) + kPacketSize;
 
 // 查找并打开 RDMA 设备的结果
 struct RdmaDeviceInfo {
