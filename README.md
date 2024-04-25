@@ -8,9 +8,23 @@
 
 ## 测试结果
 
+使用下列命令来结束 clients：
+
+```bash
+kill -usr1 `pgrep mpirun`
+```
+
 1 个进程都是 s52->s53，9 个进程都是 s51, s52, s53 各 3 个
 
 ### 单进程各 MTU
+
+10 个服务线程，1 个 client 进程，MTU 4096，depth 65
+
+```
+Passed 2.98 seconds
+  #0 11.24 GiB/s with 0.01% lost. Sended 8774235, received 8773701, 
+In total, 11.24 GiB/s, 0.01% lost, send 2.95 Mops, recv 2.95 Mops
+```
 
 **10 个服务线程，1 个 client 进程，MTU 4096，depth 33**。这个最重要，证明了这个框架是有能力打满的，且 memcpy 不消耗带宽
 
@@ -47,14 +61,84 @@ In total, 4.27 GiB/s, 0.00% lost, send 4.48 Mops, recv 4.48 Mops
 
 ### 多进程各 MTU
 
+10 个服务线程，9 个 client 进程，MTU 4096，depth 65
+
+```
+Passed 6.33 seconds
+  #0 2.05 GiB/s with 0.00% lost. Sended 3402479, received 3402479, 
+  #1 2.14 GiB/s with 0.00% lost. Sended 3547561, received 3547561, 
+  #2 2.18 GiB/s with 0.00% lost. Sended 3617442, received 3617271, 
+  #3 1.08 GiB/s with 73.05% lost. Sended 6635077, received 1788070, 
+  #4 1.01 GiB/s with 73.16% lost. Sended 6256673, received 1678997, 
+  #5 1.05 GiB/s with 73.11% lost. Sended 6488951, received 1744555, 
+  #6 1.10 GiB/s with 72.44% lost. Sended 6598005, received 1818512, 
+  #7 1.10 GiB/s with 72.39% lost. Sended 6602808, received 1822721, 
+  #8 1.04 GiB/s with 72.46% lost. Sended 6271097, received 1726774, 
+In total, 12.74 GiB/s, 57.21% lost, send 7.81 Mops, recv 3.34 Mops
+```
+
+**10 个服务线程，9 个 client 进程，MTU 4096，depth 33**。所有测试丢包率为 0 的都是目标网卡所在交换机
+
+```
+Passed 13.16 seconds
+  #0 2.05 GiB/s with 0.00% lost. Sended 7080303, received 7080303, 
+  #1 2.20 GiB/s with 0.00% lost. Sended 7589294, received 7589294, 
+  #2 2.20 GiB/s with 0.01% lost. Sended 7607791, received 7607410, 
+  #3 1.07 GiB/s with 73.04% lost. Sended 13690769, received 3691409, 
+  #4 1.06 GiB/s with 73.05% lost. Sended 13532629, received 3646401, 
+  #5 1.07 GiB/s with 73.06% lost. Sended 13654052, received 3679004, 
+  #6 1.09 GiB/s with 72.46% lost. Sended 13695528, received 3772427, 
+  #7 1.09 GiB/s with 72.46% lost. Sended 13689526, received 3769725, 
+  #8 1.08 GiB/s with 72.49% lost. Sended 13529521, received 3722267, 
+In total, 12.91 GiB/s, 57.18% lost, send 7.91 Mops, recv 3.38 Mops
+```
+
 10 个服务线程，9 个 client 进程，MTU 4096，depth 17
 
+```
+Passed 26.50 seconds
+  #0 2.06 GiB/s with 0.00% lost. Sended 14285315, received 14285315, 
+  #1 2.07 GiB/s with 0.00% lost. Sended 14362994, received 14362994, 
+  #2 2.06 GiB/s with 0.00% lost. Sended 14343984, received 14343798, 
+  #3 1.02 GiB/s with 73.00% lost. Sended 26278961, received 7094570, 
+  #4 1.02 GiB/s with 73.00% lost. Sended 26212817, received 7078288, 
+  #5 1.02 GiB/s with 73.01% lost. Sended 26282224, received 7093831, 
+  #6 1.05 GiB/s with 72.37% lost. Sended 26361526, received 7284321, 
+  #7 1.04 GiB/s with 72.41% lost. Sended 26130100, received 7210491, 
+  #8 1.04 GiB/s with 72.41% lost. Sended 26221665, received 7234593, 
+In total, 12.38 GiB/s, 57.11% lost, send 7.57 Mops, recv 3.24 Mops
+```
+
 10 个服务线程，9 个 client 进程，MTU 2048，depth 33
+
+```
+Passed 12.67 seconds
+  #0 1.98 GiB/s with 0.00% lost. Sended 13181842, received 13181842, 
+  #1 1.98 GiB/s with 0.00% lost. Sended 13160707, received 13160707, 
+  #2 1.97 GiB/s with 0.00% lost. Sended 13089465, received 13089465, 
+  #3 0.98 GiB/s with 73.58% lost. Sended 24506412, received 6475750, 
+  #4 0.97 GiB/s with 73.57% lost. Sended 24470148, received 6468121, 
+  #5 0.98 GiB/s with 73.57% lost. Sended 24535372, received 6484849, 
+  #6 1.00 GiB/s with 72.86% lost. Sended 24571975, received 6667644, 
+  #7 1.00 GiB/s with 72.87% lost. Sended 24541256, received 6658803, 
+  #8 1.01 GiB/s with 72.86% lost. Sended 24633116, received 6684635, 
+In total, 11.88 GiB/s, 57.75% lost, send 14.74 Mops, recv 6.23 Mops
+```
 
 10 个服务线程，9 个 client 进程，MTU 1024，depth 65
 
 ```
-
+Passed 8.37 seconds
+  #0 1.84 GiB/s with 0.00% lost. Sended 16133460, received 16133460, 
+  #1 1.82 GiB/s with 0.00% lost. Sended 16001636, received 16001636, 
+  #2 1.84 GiB/s with 0.00% lost. Sended 16148569, received 16148486, 
+  #3 0.90 GiB/s with 72.71% lost. Sended 29078007, received 7934021, 
+  #4 0.91 GiB/s with 72.73% lost. Sended 29444264, received 8029635, 
+  #5 0.90 GiB/s with 72.76% lost. Sended 28933228, received 7882682, 
+  #6 0.93 GiB/s with 72.13% lost. Sended 29156234, received 8125537, 
+  #7 0.94 GiB/s with 72.14% lost. Sended 29478771, received 8213844, 
+  #8 0.92 GiB/s with 72.14% lost. Sended 29108786, received 8108869, 
+In total, 11.00 GiB/s, 56.78% lost, send 26.70 Mops, recv 11.54 Mops
 ```
 
 ### ib_send_bw UD

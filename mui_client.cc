@@ -148,16 +148,14 @@ void ClientContext::DestroyContext() {
   ibv_close_device(dev_info_.ctx_);
 }
 
-void CtrlCHandler(int /*signum*/) {
+void CtrlCHandler(int signum) {
   g_ctx.should_run_ = false;
   if (g_ctx.mpi_rank_ == 0) {
-    printf("Received ctrl+c, try to stop...\n");
+    printf("Received signal %d, try to stop...\n", signum);
   }
 }
 
 int main(int argc, char *argv[]) {
-  signal(SIGTERM, CtrlCHandler);
-  signal(SIGINT, CtrlCHandler);
   if (argc != 5) {
     printf("Usage: %s dev_name gid_index server_name server_port\n", argv[0]);
     return 0;
@@ -175,6 +173,7 @@ int main(int argc, char *argv[]) {
   int name_len;
   MPI_Get_processor_name(processor_name, &name_len);
   g_ctx.hostname_ = processor_name;
+  signal(SIGUSR1, CtrlCHandler);
 
   // 上下文 init
   if (!g_ctx.InitContext()) {
@@ -182,7 +181,7 @@ int main(int argc, char *argv[]) {
     return 0;
   }
   if (g_ctx.mpi_rank_ == 0) {
-    printf("Client started! Press ctrl+c to stop\n");
+    printf("Client started! Send SIGUSR1 to mpirun stop\n");
   }
   MPI_Barrier(MPI_COMM_WORLD);
   printf("Client %d from %s\n", g_ctx.mpi_rank_, g_ctx.hostname_.c_str());
@@ -222,7 +221,7 @@ int main(int argc, char *argv[]) {
       }
     }
   }
-  MPI_Barrier(MPI_COMM_WORLD);
+  int ret = MPI_Barrier(MPI_COMM_WORLD);
   auto time_end = std::chrono::high_resolution_clock::now();
   int64_t time_in_us = std::chrono::duration_cast<std::chrono::microseconds>(
                            time_end - time_start)
