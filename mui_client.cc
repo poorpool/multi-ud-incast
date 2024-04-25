@@ -63,9 +63,10 @@ struct ClientContext {
 
 bool ClientContext::InitContext() {
   if (mpi_size_ > kClientNumLimit) {
-    printf("Too many clients!\n");
+    printf("MPI size %d > client limit %d!\n", mpi_size_, kClientNumLimit);
     return false;
   }
+
   // 获取并打开网卡设备、创建 PD
   dev_info_ = RdmaGetAndOpenDevice(cfg_.dev_name_);
 
@@ -109,7 +110,7 @@ bool ClientContext::InitContext() {
   ModifyQpToRtr(qp_);
   ModifyQpToRts(qp_);
 
-  // 创建 AH
+  // 创建服务端 AH
   jsonrpc::TcpSocketClient client(cfg_.server_name_, cfg_.server_port_);
   jsonrpc::Client c(client);
   {
@@ -121,6 +122,10 @@ bool ClientContext::InitContext() {
     remote_info_.qpn_ = resp["qpn"].asInt();
   }
   ah_ = RdmaCreateAh(dev_info_.pd_, remote_info_, cfg_.gid_idx_);
+  if (ah_ == nullptr) {
+    printf("RdmaCreateAh failed\n");
+    return false;
+  }
 
   should_run_ = true;
   return true;
@@ -131,16 +136,13 @@ void ClientContext::DestroyContext() {
   ibv_destroy_ah(ah_);
   // QP
   ibv_destroy_qp(qp_);
-
   // CQ
   ibv_destroy_cq(send_cq_);
   ibv_destroy_cq(recv_cq_);
-
   // MR and buffer
   ibv_dereg_mr(mr_);
   free(buf_);
   buf_ = nullptr;
-
   // PD and ctx
   ibv_dealloc_pd(dev_info_.pd_);
   ibv_close_device(dev_info_.ctx_);
@@ -149,7 +151,7 @@ void ClientContext::DestroyContext() {
 void CtrlCHandler(int /*signum*/) {
   g_ctx.should_run_ = false;
   if (g_ctx.mpi_rank_ == 0) {
-    printf("received ctrl+c, try to stop...");
+    printf("Received ctrl+c, try to stop...\n");
   }
 }
 
@@ -174,15 +176,21 @@ int main(int argc, char *argv[]) {
   MPI_Get_processor_name(processor_name, &name_len);
   g_ctx.hostname_ = processor_name;
 
+  // 上下文 init
   if (!g_ctx.InitContext()) {
     MPI_Finalize();
     return 0;
   }
+  if (g_ctx.mpi_rank_ == 0) {
+    printf("Client started! Press ctrl+c to stop\n");
+  }
+  MPI_Barrier(MPI_COMM_WORLD);
+  printf("Client %d from %s\n", g_ctx.mpi_rank_, g_ctx.hostname_.c_str());
 
   ibv_wc wc[kRdmaPollNum];
-  int64_t unfinished_cnt = kClientPacketNumLimit;
-  int64_t finished_cnt = 0;
-  MPI_Barrier(MPI_COMM_WORLD);
+  int64_t unfinished_cnt =
+      kClientPacketNumLimit; // 已经 post_send 但是没 poll_cq 出来的计数
+  int64_t finished_cnt = 0; // poll_cq 出来的计数
   auto time_start = std::chrono::high_resolution_clock::now();
   for (int i = 0; i < kClientPacketNumLimit; i++) {
     RdmaPostUdSend(g_ctx.buf_ + i * kPacketSize, kPacketSize, g_ctx.mr_->lkey,
@@ -194,7 +202,7 @@ int main(int argc, char *argv[]) {
     // recv 什么也不做
     n = ibv_poll_cq(g_ctx.recv_cq_, kRdmaPollNum, wc);
     // send 检查能不能继续发
-    n = ibv_poll_cq(g_ctx.recv_cq_, kRdmaPollNum, wc);
+    n = ibv_poll_cq(g_ctx.send_cq_, kRdmaPollNum, wc);
     for (int i = 0; i < n; i++) {
       if (wc[i].status != IBV_WC_SUCCESS) {
         printf("Error wc[i].status %d\n", wc[i].status);
@@ -206,19 +214,26 @@ int main(int argc, char *argv[]) {
       }
       unfinished_cnt--;
       finished_cnt++;
-      RdmaPostUdSend(g_ctx.buf_ + wc[i].wr_id * kPacketSize, kPacketSize,
-                     g_ctx.mr_->lkey, g_ctx.qp_, wc[i].wr_id, g_ctx.ah_,
-                     g_ctx.remote_info_, g_ctx.mpi_rank_);
+      if (g_ctx.should_run_) {
+        unfinished_cnt++;
+        RdmaPostUdSend(g_ctx.buf_ + wc[i].wr_id * kPacketSize, kPacketSize,
+                       g_ctx.mr_->lkey, g_ctx.qp_, wc[i].wr_id, g_ctx.ah_,
+                       g_ctx.remote_info_, g_ctx.mpi_rank_);
+      }
     }
   }
   MPI_Barrier(MPI_COMM_WORLD);
   auto time_end = std::chrono::high_resolution_clock::now();
-  int64_t time_in_us = (time_end - time_start).count();
-  // 最后打印
+  int64_t time_in_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                           time_end - time_start)
+                           .count();
+
+  // MPI gather 获取每个 client 的发送计数器
   int64_t send_cnts[kClientNumLimit];
-  MPI_Gather(&finished_cnt, 1, MPI_INT64_T, send_cnts, g_ctx.mpi_size_,
-             MPI_INT64_T, 0, MPI_COMM_WORLD);
+  MPI_Gather(&finished_cnt, 1, MPI_INT64_T, send_cnts, 1, MPI_INT64_T, 0,
+             MPI_COMM_WORLD);
   if (g_ctx.mpi_rank_ == 0) {
+    // 向 server 获取对每个 client 的接收计数器
     int64_t received_cnts[kClientNumLimit];
     jsonrpc::TcpSocketClient client(g_ctx.cfg_.server_name_,
                                     g_ctx.cfg_.server_port_);
@@ -229,18 +244,27 @@ int main(int argc, char *argv[]) {
       for (int i = 0; i < g_ctx.mpi_size_; i++) {
         received_cnts[i] = resp[std::to_string(i)].asInt64();
       }
-      c.CallNotification("shutdown", req);
+      c.CallNotification("shutdown", req); // 关闭 server
     }
     printf("Passed %.2f seconds\n", time_in_us / 1000000.0);
     double total_gibs = 0.0;
+    int64_t total_receive = 0;
+    int64_t total_send = 0;
     for (int i = 0; i < g_ctx.mpi_size_; i++) {
-      double tmp =
-          received_cnts[i] * kPacketSize / 1.024 / 1.024 / 1.024 / time_in_us;
-      printf("  #%d sended %ld, received %ld, %.2f GiB/s", i, send_cnts[i],
-             received_cnts[i], tmp);
-      total_gibs += tmp;
+      total_receive += received_cnts[i];
+      total_send += send_cnts[i];
+      double tmp_gibs =
+          received_cnts[i] * kPacketSize / 1.024 / 1.024 / 1024.0 / time_in_us;
+      printf("  #%d %.2f GiB/s with %.2f%% lost. Sended %ld, received %ld, \n",
+             i, tmp_gibs,
+             100.0 * (send_cnts[i] - received_cnts[i]) / send_cnts[i],
+             send_cnts[i], received_cnts[i]);
+      total_gibs += tmp_gibs;
     }
-    printf("Total %.2f GiB/s\n", total_gibs);
+    printf(
+        "In total, %.2f GiB/s, %.2f%% lost, send %.2f Mops, recv %.2f Mops\n",
+        total_gibs, 100.0 * (total_send - total_receive) / total_send,
+        1.0 * total_send / time_in_us, 1.0 * total_receive / time_in_us);
   }
 
   g_ctx.DestroyContext();

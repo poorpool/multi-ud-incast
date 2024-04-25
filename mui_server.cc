@@ -9,14 +9,19 @@
 #include <jsonrpccpp/server/connectors/tcpsocketserver.h>
 #include <pthread.h>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 using jsonrpc::JSON_STRING;
 using jsonrpc::PARAMS_BY_NAME;
 using jsonrpc::Procedure;
-using std::atomic;
 using std::thread;
 using std::vector;
+
+// 和 cacheline 对齐的 int，避免多线程访问 int 数组冲突
+struct __attribute__((aligned(64))) PaddingInt {
+  int val_;
+};
 
 // 工作线程上下文
 struct WorkerContext {
@@ -33,8 +38,6 @@ struct WorkerContext {
   ibv_qp *qp_;
   // 信息交换时自己的 info
   RdmaExchangeInfo self_info_;
-  // RDMA AH
-  ibv_ah *ah_;
   // 模拟 memcpy 的目的地
   char small_buffer_[kPacketSize];
 
@@ -54,8 +57,8 @@ struct ServerConfig {
   int server_port_;
   // 运行多少服务线程
   int thread_num_;
-  // 运行多少 client 进程
-  int client_num_;
+  // 从哪个核开始绑
+  int start_core_;
 };
 
 struct ServerContext {
@@ -74,7 +77,7 @@ struct ServerContext {
   // 是否还没被 ctrl+c 或者客户端停止运行
   bool should_run_;
   // 每个 client 收到的包计数
-  atomic<int> received_cnts_[kClientNumLimit];
+  PaddingInt received_cnts_[kClientNumLimit];
 
   // 初始化 RDMA 环境和工作线程，返回成功与否
   void InitContext();
@@ -84,6 +87,7 @@ struct ServerContext {
 
 bool WorkerContext::InitContext(int id) {
   id_ = id;
+
   // 创建 CQ
   send_cq_ =
       ibv_create_cq(g_ctx.dev_info_.ctx_, kRdmaCqSize, nullptr, nullptr, 0);
@@ -126,17 +130,15 @@ bool WorkerContext::InitContext(int id) {
   ModifyQpToRtr(qp_);
   ModifyQpToRts(qp_);
 
-  // 创建 AH
+  // 取得信息
   self_info_.gid_ = g_ctx.gid_;
   self_info_.lid_ = g_ctx.dev_info_.port_attr_.lid;
   self_info_.qpn_ = qp_->qp_num;
-  ah_ = RdmaCreateAh(g_ctx.dev_info_.pd_, self_info_, g_ctx.cfg_.gid_idx_);
+
   return true;
 }
 
 void WorkerContext::DestroyContext() {
-  // AH
-  ibv_destroy_ah(ah_);
   // QP
   ibv_destroy_qp(qp_);
 
@@ -165,9 +167,11 @@ void ServerContext::InitContext() {
     memset(&gid_, 0, sizeof(union ibv_gid));
   }
   for (auto &received_cnt : received_cnts_) {
-    received_cnt = 0;
+    received_cnt.val_ = 0;
   }
+
   pthread_barrier_init(&barrier_, nullptr, cfg_.thread_num_ + 1);
+  should_run_ = true;
 }
 
 void ServerContext::DestroyContext() {
@@ -183,6 +187,9 @@ void ServerContext::DestroyContext() {
 }
 
 void WorkerFunc(int id) {
+  if (g_ctx.cfg_.start_core_ >= 0) {
+    BindCore(id + g_ctx.cfg_.start_core_);
+  }
   auto *w_ctx = new WorkerContext;
   if (!w_ctx->InitContext(id)) {
     printf("WorkerThread Init failed\n");
@@ -193,13 +200,16 @@ void WorkerFunc(int id) {
     RdmaPostUdRecv(w_ctx->buf_ + i * kRdmaServerBufferUnitSize,
                    kRdmaServerBufferUnitSize, w_ctx->mr_->lkey, w_ctx->qp_, i);
   }
-  pthread_barrier_wait(&g_ctx.barrier_);
+  pthread_barrier_wait(&g_ctx.barrier_); // 初始化完毕
 
   ibv_wc wc[kRdmaPollNum];
   while (g_ctx.should_run_) {
     int n;
     // send 什么也不做
     n = ibv_poll_cq(w_ctx->send_cq_, kRdmaPollNum, wc);
+    if (n != 0) {
+      printf("strange %d\n", n);
+    }
     // recv
     n = ibv_poll_cq(w_ctx->recv_cq_, kRdmaPollNum, wc);
     for (int i = 0; i < n; i++) {
@@ -211,11 +221,11 @@ void WorkerFunc(int id) {
         printf("Error wc[i].opcode %d\n", wc[i].status);
         continue;
       }
-      g_ctx.received_cnts_[wc[i].imm_data]++;
+      g_ctx.received_cnts_[wc[i].imm_data].val_++;
       memcpy_fast(w_ctx->small_buffer_,
-                  w_ctx->buf_ + wc[i].wr_id * kRdmaServerBufferUnitSize -
-                      kPacketSize,
-                  kPacketSize);
+             w_ctx->buf_ + wc[i].wr_id * kRdmaServerBufferUnitSize -
+                 kPacketSize,
+             kPacketSize);
       RdmaPostUdRecv(w_ctx->buf_ + wc[i].wr_id * kRdmaServerBufferUnitSize,
                      kRdmaServerBufferUnitSize, w_ctx->mr_->lkey, w_ctx->qp_,
                      wc[i].wr_id);
@@ -252,6 +262,7 @@ ServerJrpcServer::ServerJrpcServer(jsonrpc::TcpSocketServer &server)
 void ServerJrpcServer::QueryAh(const Json::Value &req, // NOLINT
                                Json::Value &resp) {
   int id = req["id"].asInt();
+  printf("Found client %d\n", id);
   WorkerContext *w_ctx = g_ctx.ctxs_[id % g_ctx.cfg_.thread_num_];
   resp["gid"] = RdmaGid2Str(w_ctx->self_info_.gid_);
   resp["lid"] = w_ctx->self_info_.lid_;
@@ -261,13 +272,14 @@ void ServerJrpcServer::QueryAh(const Json::Value &req, // NOLINT
 void ServerJrpcServer::QueryCounters(const Json::Value &req, // NOLINT
                                      Json::Value &resp) {
   for (int i = 0; i < kClientNumLimit; i++) {
-    resp[std::to_string(i)] =
-        static_cast<Json::Value::Int64>(g_ctx.received_cnts_[i]);
+    int64_t tmp = g_ctx.received_cnts_[i].val_;
+    resp[std::to_string(i)] = static_cast<Json::Value::Int64>(tmp);
   }
 }
 
 void ServerJrpcServer::Shutdown(const Json::Value &req) { // NOLINT
   g_ctx.should_run_ = false;
+  printf("Shutdown...\n");
 }
 
 void CtrlCHandler(int /*signum*/) { g_ctx.should_run_ = false; }
@@ -275,8 +287,10 @@ void CtrlCHandler(int /*signum*/) { g_ctx.should_run_ = false; }
 int main(int argc, char *argv[]) {
   signal(SIGTERM, CtrlCHandler);
   signal(SIGINT, CtrlCHandler);
+  printf(
+      "**Note that you should bind threads and RNIC at the same numa node!**\n");
   if (argc != 6) {
-    printf("Usage: %s dev_name gid_index server_port thread_num client_num\n",
+    printf("Usage: %s dev_name gid_index server_port thread_num start_core\n",
            argv[0]);
     return 0;
   }
@@ -284,7 +298,7 @@ int main(int argc, char *argv[]) {
   g_ctx.cfg_.gid_idx_ = atoi(argv[2]);
   g_ctx.cfg_.server_port_ = atoi(argv[3]);
   g_ctx.cfg_.thread_num_ = atoi(argv[4]);
-  g_ctx.cfg_.client_num_ = atoi(argv[5]);
+  g_ctx.cfg_.start_core_ = atoi(argv[5]);
 
   g_ctx.InitContext();
   // 创建线程
@@ -293,6 +307,7 @@ int main(int argc, char *argv[]) {
     g_ctx.workers_.emplace_back(WorkerFunc, i);
   }
   pthread_barrier_wait(&g_ctx.barrier_);
+  printf("Init success, start running...\n");
 
   jsonrpc::TcpSocketServer tss("0.0.0.0", g_ctx.cfg_.server_port_);
   jrpc_server = new ServerJrpcServer(tss);
@@ -305,5 +320,6 @@ int main(int argc, char *argv[]) {
   }
   jrpc_server->StopListening();
   g_ctx.DestroyContext();
+  printf("Stopped\n");
   return 0;
 }

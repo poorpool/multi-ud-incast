@@ -9,10 +9,10 @@
 constexpr int kRdmaDefaultPort = 1;
 // 默认 service level
 constexpr int kRdmaDefaultServiceLevel = 0;
-// RDMA SQ/RQ size
-constexpr int kRdmaWQSize = 4096;
+// RDMA SQ/RQ size。并不是越大越好
+constexpr int kRdmaWQSize = 512;
 // RDMA CQ size。如果共用 CQ，那应该是两倍的 QP size。否则相等就行
-constexpr int kRdmaCqSize = 4096;
+constexpr int kRdmaCqSize = 512;
 // RDMA 最大内联消息长度
 // 根据 guideline 和唐鼎测试，是 cacheline_size - WQE_header_size
 constexpr int kRdmaMaxInlineSize = 256 - 68;
@@ -67,5 +67,6 @@ int RdmaPostUdRecv(const void *buf, uint32_t len, uint32_t lkey, ibv_qp *qp,
 int RdmaPostUdSend(const void *buf, uint32_t len, uint32_t lkey, ibv_qp *qp,
                    int wr_id, ibv_ah *ah, RdmaExchangeInfo &dest,
                    uint32_t imm_data);
-
+// 绑定线程到 core 上
+void BindCore(int core);
 #endif // POORPOOL_RDMA_H

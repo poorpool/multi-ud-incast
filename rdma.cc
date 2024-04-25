@@ -1,5 +1,7 @@
 #include "rdma.h"
+#include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <infiniband/verbs.h>
 #include <string>
 
@@ -107,6 +109,7 @@ ibv_qp *RdmaCreateQP(ibv_pd *pd, ibv_cq *send_cq, ibv_cq *recv_cq,
   ibv_qp_init_attr qp_init_attr;
   memset(&qp_init_attr, 0, sizeof(qp_init_attr));
   qp_init_attr.qp_type = qp_type;
+  qp_init_attr.sq_sig_all = 1;                // 向所有 WR 发送信号
   qp_init_attr.send_cq = send_cq;             // 发送完成队列
   qp_init_attr.recv_cq = recv_cq;             // 接收完成队列
   qp_init_attr.cap.max_send_wr = kRdmaWQSize; // 最大发送 WR 数量
@@ -163,7 +166,7 @@ int ModifyQpToRts(struct ibv_qp *qp) {
 int RdmaPostUdRecv(const void *buf, uint32_t len, uint32_t lkey, ibv_qp *qp,
                    int wr_id) {
   int ret = 0;
-  struct ibv_recv_wr *bad_wr;
+  struct ibv_recv_wr *bad_wr = nullptr;
 
   struct ibv_sge list;
   memset(&list, 0, sizeof(ibv_sge));
@@ -179,6 +182,9 @@ int RdmaPostUdRecv(const void *buf, uint32_t len, uint32_t lkey, ibv_qp *qp,
   wr.num_sge = 1;
 
   ret = ibv_post_recv(qp, &wr, &bad_wr);
+  if (ret != 0) {
+    printf("ibv_post_recv failed %d\n", ret);
+  }
   return ret;
 }
 
@@ -186,7 +192,7 @@ int RdmaPostUdSend(const void *buf, uint32_t len, uint32_t lkey, ibv_qp *qp,
                    int wr_id, ibv_ah *ah, RdmaExchangeInfo &dest,
                    uint32_t imm_data) {
   int ret = 0;
-  struct ibv_send_wr *bad_wr;
+  struct ibv_send_wr *bad_wr = nullptr;
 
   struct ibv_sge list;
   memset(&list, 0, sizeof(ibv_sge));
@@ -208,5 +214,20 @@ int RdmaPostUdSend(const void *buf, uint32_t len, uint32_t lkey, ibv_qp *qp,
   wr.wr.ud.remote_qpn = dest.qpn_;
 
   ret = ibv_post_send(qp, &wr, &bad_wr);
+  if (ret != 0 || bad_wr != nullptr) {
+    printf("ibv_post_send failed %d %p %p\n", ret, &wr, bad_wr);
+  }
   return ret;
+}
+
+void BindCore(int core) {
+  if (core < 0) {
+    return;
+  }
+  cpu_set_t cpuset;
+
+  CPU_ZERO(&cpuset);
+  CPU_SET(core + 30, &cpuset);
+
+  pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
 }
