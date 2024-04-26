@@ -3,10 +3,12 @@
 #include "rdma.h"
 #include <atomic>
 #include <csignal>
+#include <cstdio>
 #include <infiniband/verbs.h>
 #include <json/value.h>
 #include <jsonrpccpp/server.h>
 #include <jsonrpccpp/server/connectors/tcpsocketserver.h>
+#include <netinet/ip.h>
 #include <pthread.h>
 #include <thread>
 #include <unistd.h>
@@ -78,6 +80,8 @@ struct ServerContext {
   bool should_run_;
   // 每个 client 收到的包计数
   PaddingInt received_cnts_[kClientNumLimit];
+  // 每个 client 收到的 ECN marked 包计数
+  PaddingInt ecn_cnts_[kClientNumLimit];
 
   // 初始化 RDMA 环境和工作线程，返回成功与否
   void InitContext();
@@ -169,6 +173,9 @@ void ServerContext::InitContext() {
   for (auto &received_cnt : received_cnts_) {
     received_cnt.val_ = 0;
   }
+  for (auto &ecn_cnt : ecn_cnts_) {
+    ecn_cnt.val_ = 0;
+  }
 
   pthread_barrier_init(&barrier_, nullptr, cfg_.thread_num_ + 1);
   should_run_ = true;
@@ -221,11 +228,27 @@ void WorkerFunc(int id) {
         printf("Error wc[i].opcode %d\n", wc[i].status);
         continue;
       }
+      // 读取 GRH
+      auto *grh = reinterpret_cast<ibv_grh *>(
+          w_ctx->buf_ + wc[i].wr_id * kRdmaServerBufferUnitSize);
+      // 检查过了，就不检查不耗费这个时间了
+      /*
+        if (get_grh_header_version(grh) != 4) {
+          printf("wrong header version %d\n", get_grh_header_version(grh));
+        }
+      */
+      auto *ip_hdr =
+          reinterpret_cast<struct ip *>(reinterpret_cast<char *>(grh) + 20);
+      if ((ip_hdr->ip_tos & 3) == 3) { // 提取 ECN
+        g_ctx.ecn_cnts_[wc[i].imm_data].val_++;
+      }
+
+      // 拷贝数据
       g_ctx.received_cnts_[wc[i].imm_data].val_++;
       memcpy_fast(w_ctx->small_buffer_,
-             w_ctx->buf_ + wc[i].wr_id * kRdmaServerBufferUnitSize -
-                 kPacketSize,
-             kPacketSize);
+                  w_ctx->buf_ + wc[i].wr_id * kRdmaServerBufferUnitSize +
+                      sizeof(ibv_grh),
+                  kPacketSize);
       RdmaPostUdRecv(w_ctx->buf_ + wc[i].wr_id * kRdmaServerBufferUnitSize,
                      kRdmaServerBufferUnitSize, w_ctx->mr_->lkey, w_ctx->qp_,
                      wc[i].wr_id);
@@ -272,8 +295,8 @@ void ServerJrpcServer::QueryAh(const Json::Value &req, // NOLINT
 void ServerJrpcServer::QueryCounters(const Json::Value &req, // NOLINT
                                      Json::Value &resp) {
   for (int i = 0; i < kClientNumLimit; i++) {
-    int64_t tmp = g_ctx.received_cnts_[i].val_;
-    resp[std::to_string(i)] = static_cast<Json::Value::Int64>(tmp);
+    resp["recv" + std::to_string(i)] = static_cast<Json::Value::Int64>(g_ctx.received_cnts_[i].val_);
+    resp["ecn" + std::to_string(i)] = static_cast<Json::Value::Int64>(g_ctx.ecn_cnts_[i].val_);
   }
 }
 
@@ -287,8 +310,8 @@ void CtrlCHandler(int /*signum*/) { g_ctx.should_run_ = false; }
 int main(int argc, char *argv[]) {
   signal(SIGTERM, CtrlCHandler);
   signal(SIGINT, CtrlCHandler);
-  printf(
-      "**Note that you should bind threads and RNIC at the same numa node!**\n");
+  printf("**Note that you should bind threads and RNIC at the same numa "
+         "node!**\n");
   if (argc != 6) {
     printf("Usage: %s dev_name gid_index server_port thread_num start_core\n",
            argv[0]);

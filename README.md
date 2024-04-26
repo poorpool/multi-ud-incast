@@ -141,6 +141,26 @@ Passed 8.37 seconds
 In total, 11.00 GiB/s, 56.78% lost, send 26.70 Mops, recv 11.54 Mops
 ```
 
+### ECN 比率
+
+10 个服务线程，9 个 client 进程，MTU 4096，depth 33。
+
+竟然只标记 0.24% 的包？但是其实打开交换机的会发现，可能它很多标记 ECN 的包都赶上了那个微突发的时间然后丢失了。由此可见，进行流量控制还是很有必要的。
+
+```
+Passed 15.80 seconds
+  #0 2.68 GiB/s with 0.00% lost. Sended 11113286, received 11113286, ecn marked 0 
+  #1 0.81 GiB/s with 0.00% lost. Sended 3363067, received 3363067, ecn marked 0 
+  #2 2.68 GiB/s with 0.00% lost. Sended 11115763, received 11115674, ecn marked 0 
+  #3 0.42 GiB/s with 45.84% lost. Sended 3191237, received 1728323, ecn marked 11296 
+  #4 1.95 GiB/s with 45.69% lost. Sended 14880765, received 8081492, ecn marked 35740 
+  #5 0.42 GiB/s with 45.81% lost. Sended 3178312, received 1722473, ecn marked 9099 
+  #6 1.50 GiB/s with 45.72% lost. Sended 11446110, received 6212543, ecn marked 28040 
+  #7 0.40 GiB/s with 45.82% lost. Sended 3031085, received 1642141, ecn marked 9489 
+  #8 1.50 GiB/s with 45.72% lost. Sended 11435355, received 6206615, ecn marked 27562 
+In total, 12.35 GiB/s, 29.65% lost, send 4.60 Mops, recv 3.24 Mops, ecn marked rate 0.24%
+```
+
 ### ib_send_bw UD
 
 MTU 4096

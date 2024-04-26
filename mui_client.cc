@@ -234,6 +234,7 @@ int main(int argc, char *argv[]) {
   if (g_ctx.mpi_rank_ == 0) {
     // 向 server 获取对每个 client 的接收计数器
     int64_t received_cnts[kClientNumLimit];
+    int64_t ecn_cnts[kClientNumLimit];
     jsonrpc::TcpSocketClient client(g_ctx.cfg_.server_name_,
                                     g_ctx.cfg_.server_port_);
     jsonrpc::Client c(client);
@@ -241,7 +242,8 @@ int main(int argc, char *argv[]) {
       Json::Value req;
       Json::Value resp = c.CallMethod("query-counters", req);
       for (int i = 0; i < g_ctx.mpi_size_; i++) {
-        received_cnts[i] = resp[std::to_string(i)].asInt64();
+        received_cnts[i] = resp["recv" + std::to_string(i)].asInt64();
+        ecn_cnts[i] = resp["ecn" + std::to_string(i)].asInt64();
       }
       c.CallNotification("shutdown", req); // 关闭 server
     }
@@ -249,21 +251,25 @@ int main(int argc, char *argv[]) {
     double total_gibs = 0.0;
     int64_t total_receive = 0;
     int64_t total_send = 0;
+    int64_t total_ecn = 0;
     for (int i = 0; i < g_ctx.mpi_size_; i++) {
       total_receive += received_cnts[i];
       total_send += send_cnts[i];
+      total_ecn += ecn_cnts[i];
       double tmp_gibs =
           received_cnts[i] * kPacketSize / 1.024 / 1.024 / 1024.0 / time_in_us;
-      printf("  #%d %.2f GiB/s with %.2f%% lost. Sended %ld, received %ld, \n",
+      printf("  #%d %.2f GiB/s with %.2f%% lost. Sended %ld, received %ld, ecn "
+             "marked %ld \n",
              i, tmp_gibs,
              100.0 * (send_cnts[i] - received_cnts[i]) / send_cnts[i],
-             send_cnts[i], received_cnts[i]);
+             send_cnts[i], received_cnts[i], ecn_cnts[i]);
       total_gibs += tmp_gibs;
     }
-    printf(
-        "In total, %.2f GiB/s, %.2f%% lost, send %.2f Mops, recv %.2f Mops\n",
-        total_gibs, 100.0 * (total_send - total_receive) / total_send,
-        1.0 * total_send / time_in_us, 1.0 * total_receive / time_in_us);
+    printf("In total, %.2f GiB/s, %.2f%% lost, send %.2f Mops, recv %.2f Mops, "
+           "ecn marked rate %.2f%%\n",
+           total_gibs, 100.0 * (total_send - total_receive) / total_send,
+           1.0 * total_send / time_in_us, 1.0 * total_receive / time_in_us,
+           100.0 * total_ecn / total_receive);
   }
 
   g_ctx.DestroyContext();
