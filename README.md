@@ -21,9 +21,9 @@ kill -usr1 `pgrep mpirun`
 10 个服务线程，1 个 client 进程，MTU 4096，depth 65
 
 ```
-Passed 2.98 seconds
-  #0 11.24 GiB/s with 0.01% lost. Sended 8774235, received 8773701, 
-In total, 11.24 GiB/s, 0.01% lost, send 2.95 Mops, recv 2.95 Mops
+Passed 2.46 seconds
+  #0 11.09 GiB/s with 0.01% lost. Sended 7159024, received 7158636, ecn marked 0 
+In total, 11.09 GiB/s, 0.01% lost, send 2.91 Mops, recv 2.91 Mops, ecn marked rate 0.00%
 ```
 
 **10 个服务线程，1 个 client 进程，MTU 4096，depth 33**。这个最重要，证明了这个框架是有能力打满的，且 memcpy 不消耗带宽
