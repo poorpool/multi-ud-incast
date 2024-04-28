@@ -10,7 +10,7 @@ constexpr int64_t kPacketSize = 4096;
 // 客户端并发发送的 packet 数量上限
 constexpr int kClientPacketNumLimit = 33;
 // 最多能有几个 MPI 进程
-constexpr int kClientNumLimit = 10;
+constexpr int kClientNumLimit = 15;
 
 static inline uint16_t ipv4_calc_hdr_csum(uint16_t *data,
                                           unsigned int num_hwords) {
