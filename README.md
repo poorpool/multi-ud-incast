@@ -2,7 +2,7 @@
 
 ## 结论
 
-1. 一定要把线程绑到对应的 numa node 上，不然性能挂逼了！
+1. 一定要把 server 线程绑到对应的 numa node 上，不然性能挂逼了！绑定正确的 NUMA 才能 enable DDIO，不然单线程受到内存中的 memcpy 速度限制 https://github.com/poorpool/memcpy-vs-loopback。
 2. transmit depth=17 的时候性能比较一般，=33的时候性能就很好了，基本能持平 ib_send_bw；
 3. 其他内容调整好了以后，加上 memcpy 性能损失不是特别大，但也是有的。memcpy 对没对齐问题也不大（当然，最好还是能和 4、8、16 这样的数字对齐）。
 

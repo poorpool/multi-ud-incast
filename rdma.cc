@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <infiniband/verbs.h>
+#include <numa.h>
+#include <numaif.h>
 #include <string>
 
 using std::string;
@@ -227,7 +229,18 @@ void BindCore(int core) {
   cpu_set_t cpuset;
 
   CPU_ZERO(&cpuset);
-  CPU_SET(core + 30, &cpuset);
+  CPU_SET(core, &cpuset);
 
   pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
+  numa_set_localalloc();
+}
+
+int get_numa_node(void *memory) {
+  int node = -1;
+  if (get_mempolicy(&node, nullptr, 0, memory, MPOL_F_NODE | MPOL_F_ADDR) ==
+      -1) {
+    perror("get_mempolicy");
+    return -1;
+  }
+  return node;
 }

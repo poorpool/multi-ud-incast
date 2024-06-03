@@ -17,16 +17,19 @@ find_package(MPI REQUIRED)
 add_executable(mui_server
   mui_server.cc
   rdma.cc
+  get_clock.cc
 )
 target_link_libraries(mui_server PRIVATE
   libjson-rpc-cpp::jsonrpcserver
   jsoncpp_lib
   ibverbs
+  numa
 )
 
 add_executable(mui_client
   mui_client.cc
   rdma.cc
+  get_clock.cc
 )
 target_link_libraries(mui_client PRIVATE
   MPI::MPI_CXX
@@ -34,4 +37,5 @@ target_link_libraries(mui_client PRIVATE
   jsoncpp_lib
   ibverbs
   pthread
+  numa
 )

@@ -9,9 +9,11 @@
 #include <jsonrpccpp/client.h>
 #include <jsonrpccpp/client/connectors/tcpsocketclient.h>
 #include <mpi.h>
+#include <numa.h>
 #include <string>
 
 using std::string;
+using std::vector;
 
 // 客户端配置
 struct ClientConfig {
@@ -61,7 +63,23 @@ struct ClientContext {
   void DestroyContext();
 } g_ctx;
 
+void NumaGetArbitraryNumaId() {
+  struct bitmask *bm = numa_get_run_node_mask();
+  vector<int> vec;
+  for (uint64_t i = 0; i < bm->size; ++i) {
+    if (numa_bitmask_isbitset(bm, i)) {
+      vec.push_back(i);
+    }
+  }
+  numa_free_nodemask(bm);
+  // 不应该为空
+  for (const auto &x : vec) {
+    printf("avaliable numa id %d\n", x);
+  }
+}
+
 bool ClientContext::InitContext() {
+  numa_set_localalloc();
   if (mpi_size_ > kClientNumLimit) {
     printf("MPI size %d > client limit %d!\n", mpi_size_, kClientNumLimit);
     return false;
@@ -174,6 +192,8 @@ int main(int argc, char *argv[]) {
   MPI_Get_processor_name(processor_name, &name_len);
   g_ctx.hostname_ = processor_name;
   signal(SIGUSR1, CtrlCHandler);
+
+  NumaGetArbitraryNumaId();
 
   // 上下文 init
   if (!g_ctx.InitContext()) {

@@ -1,5 +1,6 @@
 #include "FastMemcpy.h"
 #include "common.h"
+#include "get_clock.h"
 #include "rdma.h"
 #include <atomic>
 #include <csignal>
@@ -210,6 +211,10 @@ void WorkerFunc(int id) {
   pthread_barrier_wait(&g_ctx.barrier_); // 初始化完毕
 
   ibv_wc wc[kRdmaPollNum];
+
+  double cpu_mhz = get_cpu_mhz(1);
+  int64_t memcpy_cnt = 0;
+  cycles_t memcpy_cycles = 0;
   while (g_ctx.should_run_) {
     int n;
     // send 什么也不做
@@ -245,15 +250,21 @@ void WorkerFunc(int id) {
 
       // 拷贝数据
       g_ctx.received_cnts_[wc[i].imm_data].val_++;
-      memcpy_fast(w_ctx->small_buffer_,
-                  w_ctx->buf_ + wc[i].wr_id * kRdmaServerBufferUnitSize +
-                      sizeof(ibv_grh),
-                  kPacketSize);
+      cycles_t start = get_cycles();
+      memcpy(w_ctx->small_buffer_,
+             w_ctx->buf_ + wc[i].wr_id * kRdmaServerBufferUnitSize +
+                 sizeof(ibv_grh),
+             kPacketSize);
+      cycles_t end = get_cycles();
+      memcpy_cnt++;
+      memcpy_cycles += end - start;
       RdmaPostUdRecv(w_ctx->buf_ + wc[i].wr_id * kRdmaServerBufferUnitSize,
                      kRdmaServerBufferUnitSize, w_ctx->mr_->lkey, w_ctx->qp_,
                      wc[i].wr_id);
     }
   }
+  printf("memcpy %ld times, per cost %.2f us\n", memcpy_cnt,
+         memcpy_cycles / cpu_mhz / memcpy_cnt);
 }
 
 // master 程序的 JSON RPC 端
@@ -295,8 +306,10 @@ void ServerJrpcServer::QueryAh(const Json::Value &req, // NOLINT
 void ServerJrpcServer::QueryCounters(const Json::Value &req, // NOLINT
                                      Json::Value &resp) {
   for (int i = 0; i < kClientNumLimit; i++) {
-    resp["recv" + std::to_string(i)] = static_cast<Json::Value::Int64>(g_ctx.received_cnts_[i].val_);
-    resp["ecn" + std::to_string(i)] = static_cast<Json::Value::Int64>(g_ctx.ecn_cnts_[i].val_);
+    resp["recv" + std::to_string(i)] =
+        static_cast<Json::Value::Int64>(g_ctx.received_cnts_[i].val_);
+    resp["ecn" + std::to_string(i)] =
+        static_cast<Json::Value::Int64>(g_ctx.ecn_cnts_[i].val_);
   }
 }
 
